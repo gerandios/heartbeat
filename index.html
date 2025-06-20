@@ -285,11 +285,8 @@ const AudioEngine = (() => {
         gain.gain.setValueAtTime(vol, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
         osc.connect(gain); gain.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + dur);
     };
-    const playGuideBeat = (combo) => {
-        const maxVolume = 0.1; const fadePoint = 15;
-        const volume = maxVolume * Math.max(0, 1 - (combo / fadePoint));
-        if (volume > 0.01) playSound('sine', volume, 60, 0.1);
-    };
+    // --- ИЗМЕНЕНИЕ: Эта функция больше не используется напрямую в цикле, но оставлена для других звуков ---
+    const playGuideBeat = () => {};
     const suspend = () => audioCtx?.suspend();
     const resume = () => audioCtx?.resume();
     return { init, playSound, playGuideBeat, suspend, resume };
@@ -311,7 +308,9 @@ const state = {
     sparks: 0, combo: 0, isWaitingForDub: false, lastTapTime: 0,
     pulseEndsAt: 0, currentRate: 0, language: 'en',
     pulseQuality: 'none',
+    // --- ИЗМЕНЕНИЕ: Добавлены переменные для управления двухтактным ритмом ---
     nextBeatTime: 0,
+    isNextBeatPrimary: true,
     upgrades: { strength: 0, elasticity: 0, memory: 0 }
 };
 
@@ -430,18 +429,15 @@ const Logic = (() => {
             
             state.pulseQuality=quality;
 
-            // === CRITICAL FIX STARTS HERE ===
             if (quality === 'PERFECT') {
                 state.combo++;
-                AudioEngine.playSound('triangle', 0.7, 800, 0.2); // Triumphant sound
+                AudioEngine.playSound('triangle', 0.7, 800, 0.2); 
             } else if (quality === 'GOOD') {
-                // Combo is MAINTAINED, not incremented.
-                AudioEngine.playSound('sine', 0.6, 440, 0.15); // Neutral "on track" sound
-            } else { // 'MISS'
+                AudioEngine.playSound('sine', 0.6, 440, 0.15);
+            } else { 
                 state.combo = 0;
-                AudioEngine.playSound('sawtooth', 0.3, 80, 0.3); // Fail sound
+                AudioEngine.playSound('sawtooth', 0.3, 80, 0.3); 
             }
-            // === CRITICAL FIX ENDS HERE ===
 
             const cbr=state.combo*0.05, cbd=state.combo*0.2;
             const ubr=1+(state.upgrades.strength*0.2), ubd=state.upgrades.elasticity*0.5;
@@ -453,9 +449,26 @@ const Logic = (() => {
         update: (deltaTime) => {
             const now = Date.now();
             if(now < state.pulseEndsAt) state.sparks += state.currentRate * (deltaTime / 1000);
+            
+            // --- ИЗМЕНЕНИЕ: Логика двухтактного ритма-помощника ---
             if (now >= state.nextBeatTime) {
-                AudioEngine.playGuideBeat(state.combo);
+                const maxVolume = 0.1; 
+                const fadePoint = 15;
+                const volume = maxVolume * Math.max(0, 1 - (state.combo / fadePoint));
+
+                if (volume > 0.01) {
+                    if (state.isNextBeatPrimary) {
+                        // Низкий звук "тум" для первого удара
+                        AudioEngine.playSound('sine', volume, 150, 0.15);
+                    } else {
+                        // Высокий звук "тик" для второго удара
+                        AudioEngine.playSound('sine', volume * 0.8, 440, 0.1);
+                    }
+                }
+                
+                // Планируем следующий удар и меняем такт
                 state.nextBeatTime = now + CONFIG.PERFECT_TIMING;
+                state.isNextBeatPrimary = !state.isNextBeatPrimary;
             }
         }
     }
@@ -481,7 +494,6 @@ const Logic = (() => {
             const interval=now-state.lastTapTime;
             state.isWaitingForDub=false;
             Logic.processRhythm(interval);
-            // The sound for the second tap is now handled inside processRhythm
         }
     };
 
@@ -524,6 +536,7 @@ const Logic = (() => {
             const browserLang=navigator.language.substring(0,2);
             if(TRANSLATIONS[browserLang])state.language=browserLang;
         }
+        // --- ИЗМЕНЕНИЕ: Убедимся, что ритм-помощник запустится сразу ---
         state.nextBeatTime = Date.now();
     };
     
