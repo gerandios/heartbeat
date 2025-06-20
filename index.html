@@ -230,7 +230,7 @@
         <canvas id="oscilloscope"></canvas>
         <div id="heart"></div>
         <div id="combo-counter">x0</div>
-        <div id="tutorial-hint">Hold the Heart to Upgrade</div>
+        <div id="tutorial-hint">Tap twice, feel the rhythm</div>
     </div>
     <div id="panel-backdrop"></div>
     <div id="upgrades-panel">
@@ -239,10 +239,10 @@
     </div>
 
 <script>
-// --- TRANSLATION ENGINE ---
+// --- MODULE: TRANSLATIONS ---
 const TRANSLATIONS = {
     en: {
-        tutorialHint: "Hold the Heart to Upgrade",
+        tutorialHint: "Tap twice, feel the rhythm",
         upgradesTitle: "Upgrades", lvl: "Lvl",
         upgrades: {
             strength: { name: 'Myocardium Strength', desc: 'Increases base Sparks generation rate.' },
@@ -251,7 +251,7 @@ const TRANSLATIONS = {
         }
     },
     uk: {
-        tutorialHint: "Утримуйте серце для покращень",
+        tutorialHint: "Торкніться двічі, відчуйте ритм",
         upgradesTitle: "Покращення", lvl: "Рів",
         upgrades: {
             strength: { name: 'Сила Міокарда', desc: 'Збільшує базову швидкість генерації Іскор.' },
@@ -260,7 +260,7 @@ const TRANSLATIONS = {
         }
     },
     ru: {
-        tutorialHint: "Удерживайте сердце для улучшений",
+        tutorialHint: "Коснитесь дважды, почувствуйте ритм",
         upgradesTitle: "Улучшения", lvl: "Ур",
         upgrades: {
             strength: { name: 'Сила Миокарда', desc: 'Увеличивает базовую скорость генерации Искр.' },
@@ -270,30 +270,42 @@ const TRANSLATIONS = {
     }
 };
 
-// --- AUDIO ENGINE ---
-let audioCtx;
-const initAudio = () => { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
-const playSound = (type, vol=0.5, freq=100, dur=0.1) => {
-    if (!audioCtx) return;
-    const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
-    osc.type = type; osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
-    gain.gain.setValueAtTime(vol, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
-    osc.connect(gain); gain.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + dur);
-}
+// --- MODULE: AUDIO ENGINE ---
+const AudioEngine = (() => {
+    let audioCtx;
+    const init = () => { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); };
+    const playSound = (type, vol=0.5, freq=100, dur=0.1) => {
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
+        osc.type = type; osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        gain.gain.setValueAtTime(vol, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+        osc.connect(gain); gain.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + dur);
+    };
+    const playGuideBeat = (combo) => {
+        const maxVolume = 0.1;
+        const fadePoint = 15;
+        const volume = maxVolume * Math.max(0, 1 - (combo / fadePoint));
+        if (volume > 0.01) playSound('sine', volume, 60, 0.1); // Single, deep, unobtrusive tick
+    };
+    return { init, playSound, playGuideBeat };
+})();
 
 // --- GAME CONFIG & STATE ---
-const PERFECT_TIMING = 800; const BASE_TOLERANCE = 150;
-const DURATION = { PERFECT: 5, GOOD: 3, MISS: 1 }; const BASE_RATE = 100;
-const UPGRADES_CONFIG = [
-    { id: 'strength', baseCost: 1000, multiplier: 1.4 },
-    { id: 'elasticity', baseCost: 1500, multiplier: 1.6 },
-    { id: 'memory', baseCost: 5000, multiplier: 2.0 }
-];
-let gameState = {
+const CONFIG = {
+    PERFECT_TIMING: 800, BASE_TOLERANCE: 150,
+    DURATION: { PERFECT: 5, GOOD: 3, MISS: 1 },
+    BASE_RATE: 100,
+    UPGRADES: [
+        { id: 'strength', baseCost: 1000, multiplier: 1.4 },
+        { id: 'elasticity', baseCost: 1500, multiplier: 1.6 },
+        { id: 'memory', baseCost: 5000, multiplier: 2.0 }
+    ]
+};
+const state = {
     sparks: 0, combo: 0, isWaitingForDub: false, lastTapTime: 0,
-    pulseEndTime: 0, currentRate: 0, lastFrameTime: performance.now(),
-    language: 'en',
-    pulseQuality: 'none', // 'none', 'MISS', 'GOOD', 'PERFECT'
+    pulseEndsAt: 0, currentRate: 0, language: 'en',
+    pulseQuality: 'none',
+    nextBeatTime: 0,
     upgrades: { strength: 0, elasticity: 0, memory: 0 }
 };
 
@@ -310,217 +322,230 @@ const elements = {
     langSwitcher: document.getElementById('lang-switcher'),
     oscilloscope: document.getElementById('oscilloscope'),
 };
-let oscilloscopeCtx; let longPressTimer = null; let isBuying = false;
+let oscilloscopeCtx; let longPressTimer = null; let isBuying = false; let lastFrameTime = performance.now();
 
-// --- COLOR & VISUALS ---
-const COMBO_COLORS = [
-    { t: 0,  c: [140, 129, 163] }, { t: 5,  c: [224, 224, 224] },
-    { t: 15, c: [0, 255, 195] },   { t: 30, c: [60, 184, 255] },
-    { t: 50, c: [179, 114, 255] }, { t: 75, c: [255, 140, 0] }
-];
-const ECG_WAVEFORM = [
-    {x: 0, y: 0}, {x: 0.25, y: 0}, {x: 0.3, y: 0.1}, {x: 0.35, y: 0},
-    {x: 0.4, y: 0}, {x: 0.42, y: -0.1}, {x: 0.45, y: 1.0}, {x: 0.48, y: -0.4},
-    {x: 0.53, y: 0}, {x: 0.65, y: 0}, {x: 0.75, y: 0.25}, {x: 0.85, y: 0},
-    {x: 1.0, y: 0}
-];
-
-const lerpColor = (c1, c2, factor) => c1.map((c, i) => Math.round(c + (c2[i] - c) * factor));
-const getComboColor = (combo) => {
-    const tier = COMBO_COLORS.find(t => combo <= t.t) || COMBO_COLORS[COMBO_COLORS.length - 1];
-    const prevTier = COMBO_COLORS[COMBO_COLORS.indexOf(tier) - 1] || tier;
-    const factor = Math.max(0, Math.min(1, (combo - prevTier.t) / (tier.t - prevTier.t || 1)));
-    const color = lerpColor(prevTier.c, tier.c, factor);
-    return `rgb(${color.join(',')})`;
-};
-
-const getWaveformY = (x, quality, amplitude) => {
-    if (quality === 'MISS') return (Math.random() - 0.5) * 0.1;
-    const point = ECG_WAVEFORM.find(p => x <= p.x);
-    const prevPoint = ECG_WAVEFORM[ECG_WAVEFORM.indexOf(point) - 1] || point;
-    const factor = (x - prevPoint.x) / (point.x - prevPoint.x || 1);
-    const y = prevPoint.y + (point.y - prevPoint.y) * factor;
-    return y * amplitude;
-};
-
-const drawOscilloscope = (currentTime) => {
-    const width = elements.oscilloscope.width;
-    const height = elements.oscilloscope.height;
-    oscilloscopeCtx.clearRect(0, 0, width, height);
-
-    const isActive = currentTime < gameState.pulseEndTime;
-    if (!isActive && gameState.pulseQuality !== 'none') gameState.pulseQuality = 'none';
-
-    const quality = gameState.pulseQuality;
-    const color = getComboColor(gameState.combo);
-    oscilloscopeCtx.strokeStyle = (quality === 'none') ? '#444' : color;
-    oscilloscopeCtx.lineWidth = (quality === 'PERFECT') ? 3 : 2;
-    oscilloscopeCtx.shadowBlur = (quality === 'none') ? 0 : 10;
-    oscilloscopeCtx.shadowColor = color;
-    
-    let amplitude = 0;
-    if (quality === 'PERFECT') amplitude = 1.0;
-    else if (quality === 'GOOD') amplitude = 0.6;
-    else if (quality === 'MISS') amplitude = 0.2;
-
-    oscilloscopeCtx.beginPath();
-    const timeOffset = (currentTime / 1500) % 1; // Scrolling speed
-
-    for (let x = 0; x <= width; x++) {
-        const waveX = ((x / width) * 2 + timeOffset) % 1; // 2 cycles on screen
-        const y = height / 2 - getWaveformY(waveX, quality, amplitude) * (height * 0.4);
-        if (x === 0) oscilloscopeCtx.moveTo(x, y);
-        else oscilloscopeCtx.lineTo(x, y);
+// --- VISUALS ---
+const Visuals = (() => {
+    const COMBO_COLORS = [{t:0,c:[140,129,163]},{t:5,c:[224,224,224]},{t:15,c:[0,255,195]},{t:30,c:[60,184,255]},{t:50,c:[179,114,255]},{t:75,c:[255,140,0]}];
+    const ECG_WAVEFORM = [{x:0,y:0},{x:0.25,y:0},{x:0.3,y:0.1},{x:0.35,y:0},{x:0.4,y:0},{x:0.42,y:-0.1},{x:0.45,y:1},{x:0.48,y:-0.4},{x:0.53,y:0},{x:0.65,y:0},{x:0.75,y:0.25},{x:0.85,y:0},{x:1,y:0}];
+    const lerpColor = (c1,c2,f) => c1.map((c,i) => Math.round(c+(c2[i]-c)*f));
+    const getComboColor = (combo) => {
+        const t=COMBO_COLORS.find(c=>combo<=c.t)||COMBO_COLORS[COMBO_COLORS.length-1];
+        const p=COMBO_COLORS[COMBO_COLORS.indexOf(t)-1]||t;
+        const f=Math.max(0,Math.min(1,(combo-p.t)/(t.t-p.t||1)));
+        const c=lerpColor(p.c,t.c,f);
+        return `rgb(${c.join(',')})`;
+    };
+    const getWaveformY = (x,q,a) => {
+        if(q==='MISS') return (Math.random()-0.5)*0.1;
+        if(q==='none') return 0;
+        const p2=ECG_WAVEFORM.find(p=>x<=p.x);
+        const p1=ECG_WAVEFORM[ECG_WAVEFORM.indexOf(p2)-1]||p2;
+        const f=(x-p1.x)/(p2.x-p1.x||1);
+        const y=p1.y+(p2.y-p1.y)*f;
+        return y*a;
+    };
+    return {
+        updateHUD: () => {
+            elements.sparkCounter.textContent=Math.floor(state.sparks).toLocaleString();
+            const c=getComboColor(state.combo);
+            elements.comboCounter.style.color=c;
+            elements.comboCounter.style.textShadow=`0 0 15px ${c}`;
+            elements.comboCounter.textContent=`x${state.combo}`;
+            elements.comboCounter.classList.toggle('visible',state.combo>0);
+        },
+        drawOscilloscope: () => {
+            const w=elements.oscilloscope.width,h=elements.oscilloscope.height;
+            oscilloscopeCtx.clearRect(0,0,w,h);
+            const a=Date.now()<state.pulseEndsAt;
+            if(!a&&state.pulseQuality!=='none')state.pulseQuality='none';
+            const q=state.pulseQuality;
+            const c=getComboColor(state.combo);
+            oscilloscopeCtx.strokeStyle=q==='none'?'#444':c;
+            oscilloscopeCtx.lineWidth=q==='PERFECT'?3:2;
+            oscilloscopeCtx.shadowBlur=q==='none'?0:10;
+            oscilloscopeCtx.shadowColor=c;
+            let amp=0;
+            if(q==='PERFECT')amp=1;else if(q==='GOOD')amp=0.6;else if(q==='MISS')amp=0.2;
+            oscilloscopeCtx.beginPath();
+            const t=(Date.now()/1500)%1,n=2;
+            for(let x=0;x<=w;x++){
+                const wx=((x/w)*n+t)%1;
+                const y=h/2-getWaveformY(wx,q,amp)*(h*0.4);
+                if(x===0)oscilloscopeCtx.moveTo(x,y);else oscilloscopeCtx.lineTo(x,y);
+            }
+            oscilloscopeCtx.stroke();
+        },
+        showFeedback: (q) => {
+            const fb=document.createElement('div');
+            fb.className=`feedback-text ${q.toLowerCase()}`;
+            fb.textContent=q.toUpperCase();
+            document.body.appendChild(fb);
+            setTimeout(()=>fb.remove(),1000);
+            if(q==='PERFECT'){
+                elements.comboCounter.classList.add('thump');
+                setTimeout(()=>elements.comboCounter.classList.remove('thump'),200);
+            }
+        },
+        renderUpgrades: () => {
+            elements.upgradesList.innerHTML='';
+            const t=TRANSLATIONS[state.language];
+            CONFIG.UPGRADES.forEach(config=>{
+                const cost=Logic.calculateCost(config);
+                const lvl=state.upgrades[config.id];
+                const btn=document.createElement('button');
+                btn.className='upgrade-btn';
+                btn.disabled=state.sparks<cost;
+                btn.onclick=()=>Logic.buyUpgrade(config.id,cost);
+                const tu=t.upgrades[config.id];
+                btn.innerHTML=`<div class="upgrade-info"><div class="upgrade-name">${tu.name} (${t.lvl} ${lvl})</div><div class="upgrade-desc">${tu.desc}</div></div><div class="upgrade-cost">${cost.toLocaleString()}</div>`;
+                elements.upgradesList.appendChild(btn);
+            });
+        }
     }
-    oscilloscopeCtx.stroke();
-};
+})();
 
-// --- CORE MECHANICS ---
-const handleTap = () => {
-    if (elements.tutorialHint) {
-        elements.tutorialHint.style.opacity = '0';
-        setTimeout(() => elements.tutorialHint?.remove(), 300);
-        elements.tutorialHint = null;
-    }
-    const now = performance.now();
-    if (!gameState.isWaitingForDub) {
-        gameState.isWaitingForDub = true; gameState.lastTapTime = now; playSound('sine', 0.4, 200, 0.1);
-    } else {
-        const interval = now - gameState.lastTapTime;
-        gameState.isWaitingForDub = false; processRhythm(interval); playSound('sine', 0.6, 300, 0.15);
-    }
-};
-
-const processRhythm = (interval) => {
-    const tolerance = { PERFECT: 50 + (gameState.upgrades.memory * 5), GOOD: BASE_TOLERANCE + (gameState.upgrades.memory * 15) };
-    const deviation = Math.abs(interval - PERFECT_TIMING);
-    let quality = 'MISS';
-    if (deviation <= tolerance.PERFECT) quality = 'PERFECT';
-    else if (deviation <= tolerance.GOOD) quality = 'GOOD';
-    
-    gameState.pulseQuality = quality; // SET STATE FOR VISUALIZER
-    
-    if (quality === 'PERFECT') { gameState.combo++; playSound('triangle', 0.7, 800, 0.2); }
-    else if (quality === 'MISS') { gameState.combo = 0; playSound('sawtooth', 0.3, 80, 0.3); }
-    const comboBonusRate = gameState.combo * 0.05;
-    const comboBonusDuration = gameState.combo * 0.2;
-    const upgradeBonusRate = 1 + (gameState.upgrades.strength * 0.2);
-    const upgradeBonusDuration = gameState.upgrades.elasticity * 0.5;
-    gameState.currentRate = BASE_RATE * upgradeBonusRate * (1 + comboBonusRate);
-    const pulseDuration = (DURATION[quality] + comboBonusDuration + upgradeBonusDuration) * 1000;
-    gameState.pulseEndTime = performance.now() + pulseDuration;
-    showFeedback(quality);
-};
-
-const gameLoop = (currentTime) => {
-    const deltaTime = currentTime - gameState.lastFrameTime;
-    if (currentTime < gameState.pulseEndTime) { gameState.sparks += gameState.currentRate * (deltaTime / 1000); }
-    drawOscilloscope(currentTime);
-    updateHUD();
-    gameState.lastFrameTime = currentTime;
-    requestAnimationFrame(gameLoop);
-};
-
-// --- UI, UPGRADES & TRANSLATION ---
-const updateHUD = () => {
-    elements.sparkCounter.textContent = Math.floor(gameState.sparks).toLocaleString();
-    const color = getComboColor(gameState.combo);
-    elements.comboCounter.style.color = color;
-    elements.comboCounter.style.textShadow = `0 0 15px ${color}`;
-    elements.comboCounter.textContent = `x${gameState.combo}`;
-    elements.comboCounter.classList.toggle('visible', gameState.combo > 0);
-};
-
-const showFeedback = (quality) => {
-    const fb = document.createElement('div'); fb.className = `feedback-text ${quality.toLowerCase()}`;
-    fb.textContent = quality.toUpperCase(); document.body.appendChild(fb);
-    setTimeout(() => fb.remove(), 1000);
-    if (quality === 'PERFECT') {
-        elements.comboCounter.classList.add('thump');
-        setTimeout(() => elements.comboCounter.classList.remove('thump'), 200);
-    }
-};
-
-const openUpgradesPanel = () => { renderUpgrades(); elements.upgradesPanel.classList.add('visible'); elements.panelBackdrop.classList.add('visible'); };
-const closeUpgradesPanel = () => { elements.upgradesPanel.classList.remove('visible'); elements.panelBackdrop.classList.remove('visible'); };
-const calculateCost = (config) => Math.floor(config.baseCost * Math.pow(config.multiplier, gameState.upgrades[config.id]));
-
-const setLanguage = (lang) => {
-    if (!TRANSLATIONS[lang]) lang = 'en'; gameState.language = lang;
-    const t = TRANSLATIONS[lang];
-    if (elements.tutorialHint) elements.tutorialHint.textContent = t.tutorialHint;
-    elements.upgradesTitle.textContent = t.upgradesTitle;
-    document.querySelectorAll('.lang-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.lang === lang));
-    if (elements.upgradesPanel.classList.contains('visible')) renderUpgrades();
-};
-
-const renderUpgrades = () => {
-    elements.upgradesList.innerHTML = ''; const t = TRANSLATIONS[gameState.language];
-    UPGRADES_CONFIG.forEach(config => {
-        const cost = calculateCost(config); const level = gameState.upgrades[config.id];
-        const btn = document.createElement('button'); btn.className = 'upgrade-btn';
-        btn.disabled = gameState.sparks < cost;
-        btn.onclick = () => buyUpgrade(config.id, cost);
-        const translatedUpgrade = t.upgrades[config.id];
-        btn.innerHTML = `
-            <div class="upgrade-info">
-                <div class="upgrade-name">${translatedUpgrade.name} (${t.lvl} ${level})</div>
-                <div class="upgrade-desc">${translatedUpgrade.desc}</div>
-            </div>
-            <div class="upgrade-cost">${cost.toLocaleString()}</div>`;
-        elements.upgradesList.appendChild(btn);
-    });
-};
-
-const buyUpgrade = (id, cost) => {
-    if (isBuying) return;
-    if (gameState.sparks >= cost) {
-        isBuying = true;
-        gameState.sparks -= cost;
-        gameState.upgrades[id]++;
-        renderUpgrades();
-        playSound('sine', 0.5, 500, 0.2);
-        setTimeout(() => { isBuying = false; }, 100);
-    }
-};
-
-// --- SAVE & LOAD ---
-const saveGame = () => localStorage.setItem('heartbeat_save', JSON.stringify(gameState));
-const loadGame = () => {
-    const saved = localStorage.getItem('heartbeat_save');
-    if (saved) {
-        const loadedState = JSON.parse(saved);
-        for (const key in gameState) {
-            if (loadedState[key] !== undefined) {
-                if (typeof gameState[key] === 'object' && gameState[key] !== null && !Array.isArray(gameState[key])) {
-                    gameState[key] = {...gameState[key], ...loadedState[key]};
-                } else { gameState[key] = loadedState[key]; }
+// --- MODULE: GAME LOGIC ---
+const Logic = (() => {
+    return {
+        calculateCost: (config) => Math.floor(config.baseCost * Math.pow(config.multiplier, state.upgrades[config.id])),
+        buyUpgrade: (id, cost) => {
+            if(isBuying) return;
+            if(state.sparks >= cost) {
+                isBuying=true;
+                state.sparks -= cost;
+                state.upgrades[id]++;
+                Visuals.renderUpgrades();
+                AudioEngine.playSound('sine',0.5,500,0.2);
+                setTimeout(()=>(isBuying=false),100);
+            }
+        },
+        processRhythm: (interval) => {
+            const tolerance={PERFECT:50+(state.upgrades.memory*5),GOOD:CONFIG.BASE_TOLERANCE+(state.upgrades.memory*15)};
+            const deviation=Math.abs(interval-CONFIG.PERFECT_TIMING);
+            let quality='MISS';
+            if(deviation<=tolerance.PERFECT)quality='PERFECT';
+            else if(deviation<=tolerance.GOOD)quality='GOOD';
+            state.pulseQuality=quality;
+            if(quality==='PERFECT'){state.combo++;AudioEngine.playSound('triangle',0.7,800,0.2);}
+            else if(quality==='MISS'){state.combo=0;AudioEngine.playSound('sawtooth',0.3,80,0.3);}
+            const cbr=state.combo*0.05;
+            const cbd=state.combo*0.2;
+            const ubr=1+(state.upgrades.strength*0.2);
+            const ubd=state.upgrades.elasticity*0.5;
+            state.currentRate=CONFIG.BASE_RATE*ubr*(1+cbr);
+            const dur=(CONFIG.DURATION[quality]+cbd+ubd)*1000;
+            state.pulseEndsAt=Date.now()+dur;
+            Visuals.showFeedback(quality);
+        },
+        update: (deltaTime) => {
+            const now = Date.now();
+            if(now < state.pulseEndsAt) {
+                state.sparks += state.currentRate * (deltaTime / 1000);
+            }
+            if (now >= state.nextBeatTime) {
+                AudioEngine.playGuideBeat(state.combo);
+                state.nextBeatTime = now + CONFIG.PERFECT_TIMING;
             }
         }
-    } else {
-        const browserLang = navigator.language.substring(0, 2);
-        if (TRANSLATIONS[browserLang]) gameState.language = browserLang;
     }
-};
+})();
 
-// --- INITIALIZATION ---
-window.addEventListener('load', () => {
-    loadGame(); initAudio();
-    oscilloscopeCtx = elements.oscilloscope.getContext('2d');
-    elements.oscilloscope.width = Math.min(window.innerWidth, 500);
-    elements.oscilloscope.height = 200;
-    setLanguage(gameState.language);
+// --- MODULE: MAIN CONTROLLER & INITIALIZATION ---
+(() => {
+    const handleTap = () => {
+        AudioEngine.init();
+        if(elements.tutorialHint){
+            elements.tutorialHint.style.opacity='0';
+            setTimeout(()=>elements.tutorialHint?.remove(),300);
+            elements.tutorialHint=null;
+        }
+        const now=Date.now();
+        if(!state.isWaitingForDub){
+            state.isWaitingForDub=true;
+            state.lastTapTime=now;
+            AudioEngine.playSound('sine',0.5,200,0.1);
+        } else {
+            const interval=now-state.lastTapTime;
+            state.isWaitingForDub=false;
+            Logic.processRhythm(interval);
+            AudioEngine.playSound('sine',0.7,300,0.15);
+        }
+    };
+
+    const gameLoop = () => {
+        const currentTime = performance.now();
+        const deltaTime = currentTime - lastFrameTime;
+        Logic.update(deltaTime);
+        Visuals.drawOscilloscope();
+        Visuals.updateHUD();
+        lastFrameTime = currentTime;
+        requestAnimationFrame(gameLoop);
+    };
+
+    const saveGame = () => localStorage.setItem('heartbeat_save',JSON.stringify({...state, saveTime: Date.now()}));
+    const loadGame = () => {
+        const savedString = localStorage.getItem('heartbeat_save');
+        if (savedString) {
+            const savedState = JSON.parse(savedString);
+            const lastSaveTime = savedState.saveTime || Date.now();
+            const timeOffline = Date.now() - lastSaveTime;
+            
+            // Critical Fix for Offline Calculation
+            if (timeOffline > 0 && savedState.pulseEndsAt > lastSaveTime) {
+                const remainingPulseTime = savedState.pulseEndsAt - lastSaveTime;
+                const effectivePulseTime = Math.min(timeOffline, remainingPulseTime);
+                const offlineSparks = (savedState.currentRate || 0) * (effectivePulseTime / 1000);
+                savedState.sparks += offlineSparks;
+            }
+
+            // Restore state safely
+            for (const key in state) {
+                if(savedState[key]!==undefined){
+                    if(typeof state[key]==='object'&&state[key]!==null&&!Array.isArray(state[key])){
+                        state[key]={...state[key],...savedState[key]};
+                    } else {state[key]=savedState[key];}
+                }
+            }
+        } else {
+            const browserLang=navigator.language.substring(0,2);
+            if(TRANSLATIONS[browserLang])state.language=browserLang;
+        }
+        state.nextBeatTime = Date.now(); // Initialize beat timer on load
+    };
+    
+    const setLanguage = (lang) => {
+        if(!TRANSLATIONS[lang])lang='en';
+        state.language=lang;
+        const t=TRANSLATIONS[lang];
+        if(elements.tutorialHint)elements.tutorialHint.textContent=t.tutorialHint;
+        elements.upgradesTitle.textContent=t.upgradesTitle;
+        document.querySelectorAll('.lang-btn').forEach(b=>b.classList.toggle('active',b.dataset.lang===lang));
+        if(elements.upgradesPanel.classList.contains('visible'))Visuals.renderUpgrades();
+    };
+
+    const openUpgradesPanel = () => { Visuals.renderUpgrades(); elements.upgradesPanel.classList.add('visible'); elements.panelBackdrop.classList.add('visible'); };
+    const closeUpgradesPanel = () => { elements.upgradesPanel.classList.remove('visible'); elements.panelBackdrop.classList.remove('visible'); };
+    
     const onPointerDown = (e) => { e.preventDefault(); clearTimeout(longPressTimer); longPressTimer = setTimeout(openUpgradesPanel, 500); };
     const onPointerUp = (e) => { e.preventDefault(); clearTimeout(longPressTimer); handleTap(); };
-    elements.heart.addEventListener('mousedown', onPointerDown);
-    elements.heart.addEventListener('mouseup', onPointerUp);
-    elements.heart.addEventListener('touchstart', onPointerDown, { passive: false });
-    elements.heart.addEventListener('touchend', onPointerUp);
-    elements.panelBackdrop.addEventListener('click', closeUpgradesPanel);
-    elements.langSwitcher.addEventListener('click', (e) => { if(e.target.matches('.lang-btn')) setLanguage(e.target.dataset.lang); });
-    requestAnimationFrame(gameLoop);
-    setInterval(saveGame, 5000);
-});
+    
+    window.addEventListener('load', () => {
+        loadGame();
+        oscilloscopeCtx = elements.oscilloscope.getContext('2d');
+        elements.oscilloscope.width = Math.min(window.innerWidth, 500);
+        elements.oscilloscope.height = 200;
+        setLanguage(state.language);
+        elements.heart.addEventListener('mousedown', onPointerDown);
+        elements.heart.addEventListener('mouseup', onPointerUp);
+        elements.heart.addEventListener('touchstart', onPointerDown, { passive: false });
+        elements.heart.addEventListener('touchend', onPointerUp);
+        elements.panelBackdrop.addEventListener('click', closeUpgradesPanel);
+        elements.langSwitcher.addEventListener('click', (e) => { if(e.target.matches('.lang-btn')) { handleTap(); setLanguage(e.target.dataset.lang); } });
+        requestAnimationFrame(gameLoop);
+        setInterval(saveGame, 5000);
+    });
+})();
 </script>
 </body>
 </html>
