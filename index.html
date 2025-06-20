@@ -19,7 +19,7 @@
             --panel-bg: #191822;
         }
 
-        * { box-sizing: border-box; user-select: none; }
+        * { box-sizing: border-box; user-select: none; -webkit-tap-highlight-color: transparent; }
 
         body {
             background-color: var(--bg-color);
@@ -101,8 +101,11 @@
             transform: translateX(-50%) scale(1);
             opacity: 1;
         }
-        #combo-counter.thump {
-            transform: translateX(-50%) scale(1.2) !important;
+        .thump-animation {
+            animation: thump-effect 0.2s ease-out;
+        }
+        @keyframes thump-effect {
+            50% { transform: scale(1.2); }
         }
 
         #heart {
@@ -179,6 +182,7 @@
             font-size: 1rem;
             pointer-events: none;
             text-align: center;
+            transition: opacity 0.3s;
         }
 
         /* --- Upgrades Panel --- */
@@ -275,19 +279,20 @@ const AudioEngine = (() => {
     let audioCtx;
     const init = () => { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); };
     const playSound = (type, vol=0.5, freq=100, dur=0.1) => {
-        if (!audioCtx) return;
+        if (!audioCtx || audioCtx.state === 'suspended') return;
         const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
         osc.type = type; osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
         gain.gain.setValueAtTime(vol, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
         osc.connect(gain); gain.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + dur);
     };
     const playGuideBeat = (combo) => {
-        const maxVolume = 0.1;
-        const fadePoint = 15;
+        const maxVolume = 0.1; const fadePoint = 15;
         const volume = maxVolume * Math.max(0, 1 - (combo / fadePoint));
-        if (volume > 0.01) playSound('sine', volume, 60, 0.1); // Single, deep, unobtrusive tick
+        if (volume > 0.01) playSound('sine', volume, 60, 0.1);
     };
-    return { init, playSound, playGuideBeat };
+    const suspend = () => audioCtx?.suspend();
+    const resume = () => audioCtx?.resume();
+    return { init, playSound, playGuideBeat, suspend, resume };
 })();
 
 // --- GAME CONFIG & STATE ---
@@ -295,6 +300,7 @@ const CONFIG = {
     PERFECT_TIMING: 800, BASE_TOLERANCE: 150,
     DURATION: { PERFECT: 5, GOOD: 3, MISS: 1 },
     BASE_RATE: 100,
+    RHYTHM_RESET_TIMEOUT: 1200, // 1.5 * 800ms
     UPGRADES: [
         { id: 'strength', baseCost: 1000, multiplier: 1.4 },
         { id: 'elasticity', baseCost: 1500, multiplier: 1.6 },
@@ -322,7 +328,8 @@ const elements = {
     langSwitcher: document.getElementById('lang-switcher'),
     oscilloscope: document.getElementById('oscilloscope'),
 };
-let oscilloscopeCtx; let longPressTimer = null; let isBuying = false; let lastFrameTime = performance.now();
+let oscilloscopeCtx; let longPressTimer = null; let rhythmResetTimer = null;
+let isBuying = false; let lastFrameTime = performance.now(); let gameLoopId = null;
 
 // --- VISUALS ---
 const Visuals = (() => {
@@ -337,36 +344,28 @@ const Visuals = (() => {
         return `rgb(${c.join(',')})`;
     };
     const getWaveformY = (x,q,a) => {
-        if(q==='MISS') return (Math.random()-0.5)*0.1;
-        if(q==='none') return 0;
-        const p2=ECG_WAVEFORM.find(p=>x<=p.x);
-        const p1=ECG_WAVEFORM[ECG_WAVEFORM.indexOf(p2)-1]||p2;
-        const f=(x-p1.x)/(p2.x-p1.x||1);
-        const y=p1.y+(p2.y-p1.y)*f;
-        return y*a;
+        if(q==='MISS') return (Math.random()-0.5)*0.1; if(q==='none') return 0;
+        const p2=ECG_WAVEFORM.find(p=>x<=p.x); const p1=ECG_WAVEFORM[ECG_WAVEFORM.indexOf(p2)-1]||p2;
+        const f=(x-p1.x)/(p2.x-p1.x||1); const y=p1.y+(p2.y-p1.y)*f; return y*a;
     };
     return {
         updateHUD: () => {
             elements.sparkCounter.textContent=Math.floor(state.sparks).toLocaleString();
             const c=getComboColor(state.combo);
-            elements.comboCounter.style.color=c;
-            elements.comboCounter.style.textShadow=`0 0 15px ${c}`;
+            elements.comboCounter.style.color=c; elements.comboCounter.style.textShadow=`0 0 15px ${c}`;
             elements.comboCounter.textContent=`x${state.combo}`;
             elements.comboCounter.classList.toggle('visible',state.combo>0);
         },
         drawOscilloscope: () => {
+            if (!oscilloscopeCtx) return;
             const w=elements.oscilloscope.width,h=elements.oscilloscope.height;
             oscilloscopeCtx.clearRect(0,0,w,h);
-            const a=Date.now()<state.pulseEndsAt;
-            if(!a&&state.pulseQuality!=='none')state.pulseQuality='none';
-            const q=state.pulseQuality;
-            const c=getComboColor(state.combo);
+            const a=Date.now()<state.pulseEndsAt; if(!a&&state.pulseQuality!=='none')state.pulseQuality='none';
+            const q=state.pulseQuality; const c=getComboColor(state.combo);
             oscilloscopeCtx.strokeStyle=q==='none'?'#444':c;
             oscilloscopeCtx.lineWidth=q==='PERFECT'?3:2;
-            oscilloscopeCtx.shadowBlur=q==='none'?0:10;
-            oscilloscopeCtx.shadowColor=c;
-            let amp=0;
-            if(q==='PERFECT')amp=1;else if(q==='GOOD')amp=0.6;else if(q==='MISS')amp=0.2;
+            oscilloscopeCtx.shadowBlur=q==='none'?0:10; oscilloscopeCtx.shadowColor=c;
+            let amp=0; if(q==='PERFECT')amp=1;else if(q==='GOOD')amp=0.6;else if(q==='MISS')amp=0.2;
             oscilloscopeCtx.beginPath();
             const t=(Date.now()/1500)%1,n=2;
             for(let x=0;x<=w;x++){
@@ -383,8 +382,9 @@ const Visuals = (() => {
             document.body.appendChild(fb);
             setTimeout(()=>fb.remove(),1000);
             if(q==='PERFECT'){
-                elements.comboCounter.classList.add('thump');
-                setTimeout(()=>elements.comboCounter.classList.remove('thump'),200);
+                elements.comboCounter.classList.remove('thump-animation');
+                void elements.comboCounter.offsetWidth; // Trigger reflow
+                elements.comboCounter.classList.add('thump-animation');
             }
         },
         renderUpgrades: () => {
@@ -398,7 +398,12 @@ const Visuals = (() => {
                 btn.disabled=state.sparks<cost;
                 btn.onclick=()=>Logic.buyUpgrade(config.id,cost);
                 const tu=t.upgrades[config.id];
-                btn.innerHTML=`<div class="upgrade-info"><div class="upgrade-name">${tu.name} (${t.lvl} ${lvl})</div><div class="upgrade-desc">${tu.desc}</div></div><div class="upgrade-cost">${cost.toLocaleString()}</div>`;
+                const infoDiv = document.createElement('div'); infoDiv.className = 'upgrade-info';
+                const nameDiv = document.createElement('div'); nameDiv.className = 'upgrade-name'; nameDiv.textContent = `${tu.name} (${t.lvl} ${lvl})`;
+                const descDiv = document.createElement('div'); descDiv.className = 'upgrade-desc'; descDiv.textContent = tu.desc;
+                const costDiv = document.createElement('div'); costDiv.className = 'upgrade-cost'; costDiv.textContent = cost.toLocaleString();
+                infoDiv.append(nameDiv, descDiv);
+                btn.append(infoDiv, costDiv);
                 elements.upgradesList.appendChild(btn);
             });
         }
@@ -410,15 +415,11 @@ const Logic = (() => {
     return {
         calculateCost: (config) => Math.floor(config.baseCost * Math.pow(config.multiplier, state.upgrades[config.id])),
         buyUpgrade: (id, cost) => {
-            if(isBuying) return;
-            if(state.sparks >= cost) {
-                isBuying=true;
-                state.sparks -= cost;
-                state.upgrades[id]++;
-                Visuals.renderUpgrades();
-                AudioEngine.playSound('sine',0.5,500,0.2);
-                setTimeout(()=>(isBuying=false),100);
-            }
+            if(isBuying || state.sparks < cost) return;
+            isBuying=true;
+            state.sparks -= cost; state.upgrades[id]++;
+            Visuals.renderUpgrades(); AudioEngine.playSound('sine',0.5,500,0.2);
+            setTimeout(()=>(isBuying=false),100);
         },
         processRhythm: (interval) => {
             const tolerance={PERFECT:50+(state.upgrades.memory*5),GOOD:CONFIG.BASE_TOLERANCE+(state.upgrades.memory*15)};
@@ -427,12 +428,10 @@ const Logic = (() => {
             if(deviation<=tolerance.PERFECT)quality='PERFECT';
             else if(deviation<=tolerance.GOOD)quality='GOOD';
             state.pulseQuality=quality;
-            if(quality==='PERFECT'){state.combo++;AudioEngine.playSound('triangle',0.7,800,0.2);}
-            else if(quality==='MISS'){state.combo=0;AudioEngine.playSound('sawtooth',0.3,80,0.3);}
-            const cbr=state.combo*0.05;
-            const cbd=state.combo*0.2;
-            const ubr=1+(state.upgrades.strength*0.2);
-            const ubd=state.upgrades.elasticity*0.5;
+            if(quality==='MISS'){state.combo=0;AudioEngine.playSound('sawtooth',0.3,80,0.3);}
+            else {state.combo++;AudioEngine.playSound('triangle',0.7,800,0.2);}
+            const cbr=state.combo*0.05, cbd=state.combo*0.2;
+            const ubr=1+(state.upgrades.strength*0.2), ubd=state.upgrades.elasticity*0.5;
             state.currentRate=CONFIG.BASE_RATE*ubr*(1+cbr);
             const dur=(CONFIG.DURATION[quality]+cbd+ubd)*1000;
             state.pulseEndsAt=Date.now()+dur;
@@ -440,9 +439,7 @@ const Logic = (() => {
         },
         update: (deltaTime) => {
             const now = Date.now();
-            if(now < state.pulseEndsAt) {
-                state.sparks += state.currentRate * (deltaTime / 1000);
-            }
+            if(now < state.pulseEndsAt) state.sparks += state.currentRate * (deltaTime / 1000);
             if (now >= state.nextBeatTime) {
                 AudioEngine.playGuideBeat(state.combo);
                 state.nextBeatTime = now + CONFIG.PERFECT_TIMING;
@@ -461,10 +458,12 @@ const Logic = (() => {
             elements.tutorialHint=null;
         }
         const now=Date.now();
+        clearTimeout(rhythmResetTimer);
         if(!state.isWaitingForDub){
             state.isWaitingForDub=true;
             state.lastTapTime=now;
             AudioEngine.playSound('sine',0.5,200,0.1);
+            rhythmResetTimer = setTimeout(() => { state.isWaitingForDub = false; }, CONFIG.RHYTHM_RESET_TIMEOUT);
         } else {
             const interval=now-state.lastTapTime;
             state.isWaitingForDub=false;
@@ -480,8 +479,11 @@ const Logic = (() => {
         Visuals.drawOscilloscope();
         Visuals.updateHUD();
         lastFrameTime = currentTime;
-        requestAnimationFrame(gameLoop);
+        gameLoopId = requestAnimationFrame(gameLoop);
     };
+    
+    const stopGameLoop = () => { if (gameLoopId) cancelAnimationFrame(gameLoopId); gameLoopId = null; };
+    const startGameLoop = () => { if (!gameLoopId) { lastFrameTime = performance.now(); gameLoopId = requestAnimationFrame(gameLoop); }};
 
     const saveGame = () => localStorage.setItem('heartbeat_save',JSON.stringify({...state, saveTime: Date.now()}));
     const loadGame = () => {
@@ -491,7 +493,6 @@ const Logic = (() => {
             const lastSaveTime = savedState.saveTime || Date.now();
             const timeOffline = Date.now() - lastSaveTime;
             
-            // Critical Fix for Offline Calculation
             if (timeOffline > 0 && savedState.pulseEndsAt > lastSaveTime) {
                 const remainingPulseTime = savedState.pulseEndsAt - lastSaveTime;
                 const effectivePulseTime = Math.min(timeOffline, remainingPulseTime);
@@ -499,11 +500,10 @@ const Logic = (() => {
                 savedState.sparks += offlineSparks;
             }
 
-            // Restore state safely
             for (const key in state) {
                 if(savedState[key]!==undefined){
                     if(typeof state[key]==='object'&&state[key]!==null&&!Array.isArray(state[key])){
-                        state[key]={...state[key],...savedState[key]};
+                        Object.assign(state[key], savedState[key]);
                     } else {state[key]=savedState[key];}
                 }
             }
@@ -511,7 +511,7 @@ const Logic = (() => {
             const browserLang=navigator.language.substring(0,2);
             if(TRANSLATIONS[browserLang])state.language=browserLang;
         }
-        state.nextBeatTime = Date.now(); // Initialize beat timer on load
+        state.nextBeatTime = Date.now();
     };
     
     const setLanguage = (lang) => {
@@ -530,19 +530,44 @@ const Logic = (() => {
     const onPointerDown = (e) => { e.preventDefault(); clearTimeout(longPressTimer); longPressTimer = setTimeout(openUpgradesPanel, 500); };
     const onPointerUp = (e) => { e.preventDefault(); clearTimeout(longPressTimer); handleTap(); };
     
+    const onResize = () => {
+        elements.oscilloscope.width = Math.min(window.innerWidth, 500);
+        elements.oscilloscope.height = 200;
+        Visuals.drawOscilloscope();
+    };
+
     window.addEventListener('load', () => {
         loadGame();
         oscilloscopeCtx = elements.oscilloscope.getContext('2d');
-        elements.oscilloscope.width = Math.min(window.innerWidth, 500);
-        elements.oscilloscope.height = 200;
+        onResize();
         setLanguage(state.language);
-        elements.heart.addEventListener('mousedown', onPointerDown);
-        elements.heart.addEventListener('mouseup', onPointerUp);
-        elements.heart.addEventListener('touchstart', onPointerDown, { passive: false });
-        elements.heart.addEventListener('touchend', onPointerUp);
+
+        elements.heart.addEventListener('pointerdown', onPointerDown);
+        elements.heart.addEventListener('pointerup', onPointerUp);
+        
         elements.panelBackdrop.addEventListener('click', closeUpgradesPanel);
-        elements.langSwitcher.addEventListener('click', (e) => { if(e.target.matches('.lang-btn')) { handleTap(); setLanguage(e.target.dataset.lang); } });
-        requestAnimationFrame(gameLoop);
+        
+        elements.langSwitcher.addEventListener('click', (e) => {
+            if(e.target.matches('.lang-btn')) {
+                AudioEngine.init();
+                setLanguage(e.target.dataset.lang);
+            }
+        });
+
+        window.addEventListener('resize', onResize);
+        
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                stopGameLoop();
+                AudioEngine.suspend();
+                saveGame();
+            } else {
+                startGameLoop();
+                AudioEngine.resume();
+            }
+        });
+
+        startGameLoop();
         setInterval(saveGame, 5000);
     });
 })();
