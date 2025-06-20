@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Heartbeat</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #100f15;
+            --heart-color: #ff3c5f;
+            --spark-color: #ffd700;
+            --text-color: #e0e0e0;
+            --perfect-color: #00ffc3;
+            --good-color: #3cb8ff;
+            --miss-color: #8c81a3;
+            --panel-bg: #191822;
+        }
+
+        * { box-sizing: border-box; user-select: none; }
+
+        body {
+            background-color: var(--bg-color);
+            font-family: 'Poppins', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            touch-action: manipulation;
+        }
+
+        #game-world {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        #hud {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            z-index: 10;
+        }
+
+        #spark-counter {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--spark-color);
+            text-shadow: 0 0 10px var(--spark-color);
+            text-align: left;
+        }
+
+        #lang-switcher {
+            display: flex;
+            gap: 5px;
+        }
+
+        .lang-btn {
+            padding: 5px 10px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid transparent;
+            color: white;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .lang-btn:hover {
+            background: rgba(255,255,255,0.2);
+        }
+        .lang-btn.active {
+            background: var(--heart-color);
+            box-shadow: 0 0 10px var(--heart-color);
+            border-color: rgba(255,255,255,0.8);
+        }
+
+        #combo-counter {
+            font-size: 1.8rem;
+            font-weight: 600;
+            transition: color 0.3s ease, text-shadow 0.3s ease, transform 0.2s, opacity 0.3s;
+            position: absolute;
+            bottom: 20vh;
+            left: 50%;
+            transform: translateX(-50%) scale(0.9);
+            opacity: 0;
+        }
+
+        #combo-counter.visible {
+            transform: translateX(-50%) scale(1);
+            opacity: 1;
+        }
+        #combo-counter.thump {
+            transform: translateX(-50%) scale(1.2) !important;
+        }
+
+        #heart {
+            width: 100px;
+            height: 100px;
+            position: relative;
+            cursor: pointer;
+            animation: idle-pulse 2.5s infinite ease-in-out;
+            transition: transform 0.1s ease;
+        }
+        #heart:active {
+            transform: scale(0.9);
+        }
+
+        #heart::before, #heart::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            width: 52px;
+            height: 80px;
+            border-radius: 50px 50px 0 0;
+            background: var(--heart-color);
+            box-shadow: 0 0 20px var(--heart-color);
+        }
+        #heart::before {
+            left: 50px;
+            transform: rotate(-45deg);
+            transform-origin: 0 100%;
+        }
+        #heart::after {
+            left: 0;
+            transform: rotate(45deg);
+            transform-origin: 100% 100%;
+        }
+        
+        @keyframes idle-pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+        }
+
+        #oscilloscope {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        .feedback-text {
+            position: absolute;
+            top: 40%;
+            left: 50%;
+            font-size: 2rem;
+            font-weight: 700;
+            opacity: 0;
+            animation: feedback-animation 1s ease-out forwards;
+            pointer-events: none;
+        }
+        .feedback-text.perfect { color: var(--perfect-color); }
+        .feedback-text.good { color: var(--good-color); }
+        .feedback-text.miss { color: var(--miss-color); }
+
+        @keyframes feedback-animation {
+            0% { opacity: 1; transform: translate(-50%, 0) scale(0.8); }
+            80% { opacity: 1; transform: translate(-50%, -80px) scale(1.2); }
+            100% { opacity: 0; transform: translate(-50%, -100px) scale(1.2); }
+        }
+        
+        #tutorial-hint {
+            position: absolute;
+            bottom: 10vh;
+            color: rgba(255,255,255,0.7);
+            font-size: 1rem;
+            pointer-events: none;
+            text-align: center;
+        }
+
+        /* --- Upgrades Panel --- */
+        #panel-backdrop {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5); backdrop-filter: blur(5px);
+            opacity: 0; pointer-events: none;
+            transition: opacity 0.3s ease; z-index: 20;
+        }
+        #panel-backdrop.visible { opacity: 1; pointer-events: auto; }
+
+        #upgrades-panel {
+            position: fixed; bottom: 0; left: 0; width: 100%;
+            background: var(--panel-bg); border-top: 2px solid var(--heart-color);
+            box-shadow: 0 -5px 30px rgba(0,0,0,0.5); padding: 20px;
+            transform: translateY(100%); transition: transform 0.3s ease-in-out;
+            z-index: 30; max-height: 80vh; overflow-y: auto;
+        }
+        #upgrades-panel.visible { transform: translateY(0); }
+        
+        #upgrades-panel h2 {
+            margin: 0 0 20px 0; text-align: center; color: var(--text-color);
+        }
+
+        .upgrade-btn {
+            display: flex; justify-content: space-between; align-items: center;
+            width: 100%; padding: 15px; background: rgba(0,0,0,0.2);
+            border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;
+            margin-bottom: 10px; cursor: pointer; transition: background 0.2s;
+        }
+        .upgrade-btn:hover:not(:disabled) { background: rgba(255,255,255,0.1); }
+        .upgrade-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .upgrade-info { text-align: left; }
+        .upgrade-name { color: white; font-weight: 600; }
+        .upgrade-desc { font-size: 0.8em; color: var(--text-color); }
+        .upgrade-cost { color: var(--spark-color); font-weight: 700; font-size: 1.1rem; }
+    </style>
+</head>
+<body>
+    <div id="hud">
+        <div id="spark-counter">0</div>
+        <div id="lang-switcher">
+            <button class="lang-btn" data-lang="en">EN</button>
+            <button class="lang-btn" data-lang="uk">UA</button>
+            <button class="lang-btn" data-lang="ru">RU</button>
+        </div>
+    </div>
+    <div id="game-world">
+        <canvas id="oscilloscope"></canvas>
+        <div id="heart"></div>
+        <div id="combo-counter">x0</div>
+        <div id="tutorial-hint">Hold the Heart to Upgrade</div>
+    </div>
+    <div id="panel-backdrop"></div>
+    <div id="upgrades-panel">
+        <h2 id="upgrades-title">Upgrades</h2>
+        <div id="upgrades-list"></div>
+    </div>
+
+<script>
+// --- TRANSLATION ENGINE ---
+const TRANSLATIONS = {
+    en: {
+        tutorialHint: "Hold the Heart to Upgrade",
+        upgradesTitle: "Upgrades", lvl: "Lvl",
+        upgrades: {
+            strength: { name: 'Myocardium Strength', desc: 'Increases base Sparks generation rate.' },
+            elasticity: { name: 'Vessel Elasticity', desc: 'Increases base duration of the pulse.' },
+            memory: { name: 'Rhythmic Memory', desc: 'Widens the timing window for Good/Perfect hits.' }
+        }
+    },
+    uk: {
+        tutorialHint: "Утримуйте серце для покращень",
+        upgradesTitle: "Покращення", lvl: "Рів",
+        upgrades: {
+            strength: { name: 'Сила Міокарда', desc: 'Збільшує базову швидкість генерації Іскор.' },
+            elasticity: { name: 'Еластичність Судин', desc: 'Збільшує базову тривалість пульсу.' },
+            memory: { name: 'Ритмічна Пам\'ять', desc: 'Розширює часове вікно для ударів.' }
+        }
+    },
+    ru: {
+        tutorialHint: "Удерживайте сердце для улучшений",
+        upgradesTitle: "Улучшения", lvl: "Ур",
+        upgrades: {
+            strength: { name: 'Сила Миокарда', desc: 'Увеличивает базовую скорость генерации Искр.' },
+            elasticity: { name: 'Эластичность Сосудов', desc: 'Увеличивает базовую длительность импульса.' },
+            memory: { name: 'Ритмическая Память', desc: 'Расширяет временное окно для ударов.' }
+        }
+    }
+};
+
+// --- AUDIO ENGINE ---
+let audioCtx;
+const initAudio = () => { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+const playSound = (type, vol=0.5, freq=100, dur=0.1) => {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
+    osc.type = type; osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    gain.gain.setValueAtTime(vol, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    osc.connect(gain); gain.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + dur);
+}
+
+// --- GAME CONFIG & STATE ---
+const PERFECT_TIMING = 800; const BASE_TOLERANCE = 150;
+const DURATION = { PERFECT: 5, GOOD: 3, MISS: 1 }; const BASE_RATE = 100;
+const UPGRADES_CONFIG = [
+    { id: 'strength', baseCost: 1000, multiplier: 1.4 },
+    { id: 'elasticity', baseCost: 1500, multiplier: 1.6 },
+    { id: 'memory', baseCost: 5000, multiplier: 2.0 }
+];
+let gameState = {
+    sparks: 0, combo: 0, isWaitingForDub: false, lastTapTime: 0,
+    pulseEndTime: 0, currentRate: 0, lastFrameTime: performance.now(),
+    language: 'en',
+    pulseQuality: 'none', // 'none', 'MISS', 'GOOD', 'PERFECT'
+    upgrades: { strength: 0, elasticity: 0, memory: 0 }
+};
+
+// --- DOM ELEMENTS & TIMERS ---
+const elements = {
+    sparkCounter: document.getElementById('spark-counter'),
+    comboCounter: document.getElementById('combo-counter'),
+    heart: document.getElementById('heart'),
+    tutorialHint: document.getElementById('tutorial-hint'),
+    upgradesPanel: document.getElementById('upgrades-panel'),
+    upgradesList: document.getElementById('upgrades-list'),
+    upgradesTitle: document.getElementById('upgrades-title'),
+    panelBackdrop: document.getElementById('panel-backdrop'),
+    langSwitcher: document.getElementById('lang-switcher'),
+    oscilloscope: document.getElementById('oscilloscope'),
+};
+let oscilloscopeCtx; let longPressTimer = null; let isBuying = false;
+
+// --- COLOR & VISUALS ---
+const COMBO_COLORS = [
+    { t: 0,  c: [140, 129, 163] }, { t: 5,  c: [224, 224, 224] },
+    { t: 15, c: [0, 255, 195] },   { t: 30, c: [60, 184, 255] },
+    { t: 50, c: [179, 114, 255] }, { t: 75, c: [255, 140, 0] }
+];
+const ECG_WAVEFORM = [
+    {x: 0, y: 0}, {x: 0.25, y: 0}, {x: 0.3, y: 0.1}, {x: 0.35, y: 0},
+    {x: 0.4, y: 0}, {x: 0.42, y: -0.1}, {x: 0.45, y: 1.0}, {x: 0.48, y: -0.4},
+    {x: 0.53, y: 0}, {x: 0.65, y: 0}, {x: 0.75, y: 0.25}, {x: 0.85, y: 0},
+    {x: 1.0, y: 0}
+];
+
+const lerpColor = (c1, c2, factor) => c1.map((c, i) => Math.round(c + (c2[i] - c) * factor));
+const getComboColor = (combo) => {
+    const tier = COMBO_COLORS.find(t => combo <= t.t) || COMBO_COLORS[COMBO_COLORS.length - 1];
+    const prevTier = COMBO_COLORS[COMBO_COLORS.indexOf(tier) - 1] || tier;
+    const factor = Math.max(0, Math.min(1, (combo - prevTier.t) / (tier.t - prevTier.t || 1)));
+    const color = lerpColor(prevTier.c, tier.c, factor);
+    return `rgb(${color.join(',')})`;
+};
+
+const getWaveformY = (x, quality, amplitude) => {
+    if (quality === 'MISS') return (Math.random() - 0.5) * 0.1;
+    const point = ECG_WAVEFORM.find(p => x <= p.x);
+    const prevPoint = ECG_WAVEFORM[ECG_WAVEFORM.indexOf(point) - 1] || point;
+    const factor = (x - prevPoint.x) / (point.x - prevPoint.x || 1);
+    const y = prevPoint.y + (point.y - prevPoint.y) * factor;
+    return y * amplitude;
+};
+
+const drawOscilloscope = (currentTime) => {
+    const width = elements.oscilloscope.width;
+    const height = elements.oscilloscope.height;
+    oscilloscopeCtx.clearRect(0, 0, width, height);
+
+    const isActive = currentTime < gameState.pulseEndTime;
+    if (!isActive && gameState.pulseQuality !== 'none') gameState.pulseQuality = 'none';
+
+    const quality = gameState.pulseQuality;
+    const color = getComboColor(gameState.combo);
+    oscilloscopeCtx.strokeStyle = (quality === 'none') ? '#444' : color;
+    oscilloscopeCtx.lineWidth = (quality === 'PERFECT') ? 3 : 2;
+    oscilloscopeCtx.shadowBlur = (quality === 'none') ? 0 : 10;
+    oscilloscopeCtx.shadowColor = color;
+    
+    let amplitude = 0;
+    if (quality === 'PERFECT') amplitude = 1.0;
+    else if (quality === 'GOOD') amplitude = 0.6;
+    else if (quality === 'MISS') amplitude = 0.2;
+
+    oscilloscopeCtx.beginPath();
+    const timeOffset = (currentTime / 1500) % 1; // Scrolling speed
+
+    for (let x = 0; x <= width; x++) {
+        const waveX = ((x / width) * 2 + timeOffset) % 1; // 2 cycles on screen
+        const y = height / 2 - getWaveformY(waveX, quality, amplitude) * (height * 0.4);
+        if (x === 0) oscilloscopeCtx.moveTo(x, y);
+        else oscilloscopeCtx.lineTo(x, y);
+    }
+    oscilloscopeCtx.stroke();
+};
+
+// --- CORE MECHANICS ---
+const handleTap = () => {
+    if (elements.tutorialHint) {
+        elements.tutorialHint.style.opacity = '0';
+        setTimeout(() => elements.tutorialHint?.remove(), 300);
+        elements.tutorialHint = null;
+    }
+    const now = performance.now();
+    if (!gameState.isWaitingForDub) {
+        gameState.isWaitingForDub = true; gameState.lastTapTime = now; playSound('sine', 0.4, 200, 0.1);
+    } else {
+        const interval = now - gameState.lastTapTime;
+        gameState.isWaitingForDub = false; processRhythm(interval); playSound('sine', 0.6, 300, 0.15);
+    }
+};
+
+const processRhythm = (interval) => {
+    const tolerance = { PERFECT: 50 + (gameState.upgrades.memory * 5), GOOD: BASE_TOLERANCE + (gameState.upgrades.memory * 15) };
+    const deviation = Math.abs(interval - PERFECT_TIMING);
+    let quality = 'MISS';
+    if (deviation <= tolerance.PERFECT) quality = 'PERFECT';
+    else if (deviation <= tolerance.GOOD) quality = 'GOOD';
+    
+    gameState.pulseQuality = quality; // SET STATE FOR VISUALIZER
+    
+    if (quality === 'PERFECT') { gameState.combo++; playSound('triangle', 0.7, 800, 0.2); }
+    else if (quality === 'MISS') { gameState.combo = 0; playSound('sawtooth', 0.3, 80, 0.3); }
+    const comboBonusRate = gameState.combo * 0.05;
+    const comboBonusDuration = gameState.combo * 0.2;
+    const upgradeBonusRate = 1 + (gameState.upgrades.strength * 0.2);
+    const upgradeBonusDuration = gameState.upgrades.elasticity * 0.5;
+    gameState.currentRate = BASE_RATE * upgradeBonusRate * (1 + comboBonusRate);
+    const pulseDuration = (DURATION[quality] + comboBonusDuration + upgradeBonusDuration) * 1000;
+    gameState.pulseEndTime = performance.now() + pulseDuration;
+    showFeedback(quality);
+};
+
+const gameLoop = (currentTime) => {
+    const deltaTime = currentTime - gameState.lastFrameTime;
+    if (currentTime < gameState.pulseEndTime) { gameState.sparks += gameState.currentRate * (deltaTime / 1000); }
+    drawOscilloscope(currentTime);
+    updateHUD();
+    gameState.lastFrameTime = currentTime;
+    requestAnimationFrame(gameLoop);
+};
+
+// --- UI, UPGRADES & TRANSLATION ---
+const updateHUD = () => {
+    elements.sparkCounter.textContent = Math.floor(gameState.sparks).toLocaleString();
+    const color = getComboColor(gameState.combo);
+    elements.comboCounter.style.color = color;
+    elements.comboCounter.style.textShadow = `0 0 15px ${color}`;
+    elements.comboCounter.textContent = `x${gameState.combo}`;
+    elements.comboCounter.classList.toggle('visible', gameState.combo > 0);
+};
+
+const showFeedback = (quality) => {
+    const fb = document.createElement('div'); fb.className = `feedback-text ${quality.toLowerCase()}`;
+    fb.textContent = quality.toUpperCase(); document.body.appendChild(fb);
+    setTimeout(() => fb.remove(), 1000);
+    if (quality === 'PERFECT') {
+        elements.comboCounter.classList.add('thump');
+        setTimeout(() => elements.comboCounter.classList.remove('thump'), 200);
+    }
+};
+
+const openUpgradesPanel = () => { renderUpgrades(); elements.upgradesPanel.classList.add('visible'); elements.panelBackdrop.classList.add('visible'); };
+const closeUpgradesPanel = () => { elements.upgradesPanel.classList.remove('visible'); elements.panelBackdrop.classList.remove('visible'); };
+const calculateCost = (config) => Math.floor(config.baseCost * Math.pow(config.multiplier, gameState.upgrades[config.id]));
+
+const setLanguage = (lang) => {
+    if (!TRANSLATIONS[lang]) lang = 'en'; gameState.language = lang;
+    const t = TRANSLATIONS[lang];
+    if (elements.tutorialHint) elements.tutorialHint.textContent = t.tutorialHint;
+    elements.upgradesTitle.textContent = t.upgradesTitle;
+    document.querySelectorAll('.lang-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.lang === lang));
+    if (elements.upgradesPanel.classList.contains('visible')) renderUpgrades();
+};
+
+const renderUpgrades = () => {
+    elements.upgradesList.innerHTML = ''; const t = TRANSLATIONS[gameState.language];
+    UPGRADES_CONFIG.forEach(config => {
+        const cost = calculateCost(config); const level = gameState.upgrades[config.id];
+        const btn = document.createElement('button'); btn.className = 'upgrade-btn';
+        btn.disabled = gameState.sparks < cost;
+        btn.onclick = () => buyUpgrade(config.id, cost);
+        const translatedUpgrade = t.upgrades[config.id];
+        btn.innerHTML = `
+            <div class="upgrade-info">
+                <div class="upgrade-name">${translatedUpgrade.name} (${t.lvl} ${level})</div>
+                <div class="upgrade-desc">${translatedUpgrade.desc}</div>
+            </div>
+            <div class="upgrade-cost">${cost.toLocaleString()}</div>`;
+        elements.upgradesList.appendChild(btn);
+    });
+};
+
+const buyUpgrade = (id, cost) => {
+    if (isBuying) return;
+    if (gameState.sparks >= cost) {
+        isBuying = true;
+        gameState.sparks -= cost;
+        gameState.upgrades[id]++;
+        renderUpgrades();
+        playSound('sine', 0.5, 500, 0.2);
+        setTimeout(() => { isBuying = false; }, 100);
+    }
+};
+
+// --- SAVE & LOAD ---
+const saveGame = () => localStorage.setItem('heartbeat_save', JSON.stringify(gameState));
+const loadGame = () => {
+    const saved = localStorage.getItem('heartbeat_save');
+    if (saved) {
+        const loadedState = JSON.parse(saved);
+        for (const key in gameState) {
+            if (loadedState[key] !== undefined) {
+                if (typeof gameState[key] === 'object' && gameState[key] !== null && !Array.isArray(gameState[key])) {
+                    gameState[key] = {...gameState[key], ...loadedState[key]};
+                } else { gameState[key] = loadedState[key]; }
+            }
+        }
+    } else {
+        const browserLang = navigator.language.substring(0, 2);
+        if (TRANSLATIONS[browserLang]) gameState.language = browserLang;
+    }
+};
+
+// --- INITIALIZATION ---
+window.addEventListener('load', () => {
+    loadGame(); initAudio();
+    oscilloscopeCtx = elements.oscilloscope.getContext('2d');
+    elements.oscilloscope.width = Math.min(window.innerWidth, 500);
+    elements.oscilloscope.height = 200;
+    setLanguage(gameState.language);
+    const onPointerDown = (e) => { e.preventDefault(); clearTimeout(longPressTimer); longPressTimer = setTimeout(openUpgradesPanel, 500); };
+    const onPointerUp = (e) => { e.preventDefault(); clearTimeout(longPressTimer); handleTap(); };
+    elements.heart.addEventListener('mousedown', onPointerDown);
+    elements.heart.addEventListener('mouseup', onPointerUp);
+    elements.heart.addEventListener('touchstart', onPointerDown, { passive: false });
+    elements.heart.addEventListener('touchend', onPointerUp);
+    elements.panelBackdrop.addEventListener('click', closeUpgradesPanel);
+    elements.langSwitcher.addEventListener('click', (e) => { if(e.target.matches('.lang-btn')) setLanguage(e.target.dataset.lang); });
+    requestAnimationFrame(gameLoop);
+    setInterval(saveGame, 5000);
+});
+</script>
+</body>
+</html>
